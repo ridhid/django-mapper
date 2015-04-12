@@ -1,0 +1,1 @@
+from test_xml import XmlMapperTestSuite
