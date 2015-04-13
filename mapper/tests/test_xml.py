@@ -28,6 +28,8 @@ class XmlMapperTestSuite(TestCase):
                     'model': 'mapper.Place',
                     'field': 'events',
                     'through': 'mapper.NewsThroughPlace',
+                    'left_field': 'events',
+                    'right_field': 'places',
                     'hook': 'simple_hook',
                     'fields': {
                         'date': {

@@ -4,11 +4,11 @@ from django.db.models.loading import get_model
 
 class BaseFieldParser(object):
 
-    def __init__(self, model, name, schema):
+    def __init__(self, model, name, options):
         self.model = model
         self.name = name
 
-        options = self.validate(schema)
+        options = self.validate(options)
         self.query = options['query']
         self.hook = options['hook']
         self.rel_to = options['model']
@@ -24,9 +24,9 @@ class BaseFieldParser(object):
         return query
 
     @classmethod
-    def validate_model(cls, schema):
-        model = schema.get('model')
-        field = schema.get('field')
+    def validate_model(cls, options):
+        model = options.get('model')
+        field = options.get('field')
 
         if model and field is None:
             raise ValueError('field must contain a "field" attr '
@@ -55,18 +55,18 @@ class BaseFieldParser(object):
         return model, field
 
     @classmethod
-    def validate_hook(cls, schema):
-        hook = schema.get('hook')
+    def validate_hook(cls, options):
+        hook = options.get('hook')
         if hook in HookRegistry.hooks:
             return HookRegistry.hooks[hook]
         raise ValueError('hook {hook} not found'.format(hook=hook))
 
     @classmethod
-    def validate(cls, schema):
-        query = cls.validate_query(schema)
-        if isinstance(schema, dict):
-            hook = cls.validate_hook(schema)
-            model, field = cls.validate_model(schema)
+    def validate(cls, options):
+        query = cls.validate_query(options)
+        if isinstance(options, dict):
+            hook = cls.validate_hook(options)
+            model, field = cls.validate_model(options)
         else:
             model = field = hook = None
 
@@ -75,7 +75,7 @@ class BaseFieldParser(object):
                 'model': model,
                 'field': field}
 
-    def _get_raw_value(self, raw_data):
+    def _get_raw_value(self, raw_data, query):
         raise NotImplementedError
 
     @staticmethod
@@ -83,7 +83,7 @@ class BaseFieldParser(object):
         return model.get(**{field: value})
 
     def parse(self, raw_data):
-        value = self._get_raw_value(raw_data)
+        value = self._get_raw_value(raw_data, query=self.query)
         if self.hook:
             value = self.hook
         if self.rel_to and self.rel_to_field:
@@ -96,87 +96,127 @@ class BaseFieldParser(object):
 class BaseManyToManyParseField(BaseFieldParser):
     field_parser_cls = BaseFieldParser
 
-    def __init__(self, model, name, schema):
+    def __init__(self, model, name, options):
         self.name = name
         self.left_model = model
 
-        options = self.validate(schema)
+        options = self.validate(options)
         self.query = options['query']
         self.right_model = options['model']
         self.right_model_field = options['field']
         self.through_model = options['through']
         self.through_fields = options['through_fields']
+        self.left_field = options['left_field']
+        self.right_field = options['right_field']
 
     @classmethod
-    def validate_through_model(cls, schema):
-        through = schema.get('through')
+    def validate_through_model(cls, options):
+        through = options.get('through')
+        through_all_fields = ()
         if through is not None:
             through = get_model(through.split('.'))
             if through is None:
                 raise ValueError('model {model} not found'.
                                  format(model=through))
+            through_all_fields = through._meta.get_all_field_names()
 
-        fields = schema.get('fields')
+        left_field = options.get('left_field')
+        right_field = options.get('right_field')
+
+        if through and not left_field:
+            raise ValueError('many to many relations description must contain'
+                             '"left_field" field, if contain "through" field')
+        if through and not right_field:
+            raise ValueError('many to many relations description must contain'
+                             '"right_field" field, if contain "through" field')
+
+        if left_field not in through_all_fields:
+            raise ValueError('model {model} not contain: {field}'
+                             .format(field=left_field))
+
+        if right_field not in through_all_fields:
+            raise ValueError('model {model} not contain: {field}'
+                             .format(field=right_field))
+
+        fields = options.get('fields')
         if fields and not through:
             raise ValueError('many to many relation description must contain'
                              '"through" if "fields" is specified')
         elif fields:
-            through_all_fields = through._meta.get_all_field_names()
             for field in fields:
                 if field not in through_all_fields:
                     raise ValueError('model {model} not contain: {field}'
                                      .format(model=through, field=field))
-        return through, fields
+        return {'model': through,
+                'fields': fields,
+                'left_field': left_field,
+                'right_field': right_field}
 
     @classmethod
-    def validate(cls, schema):
-        query = cls.validate_query(schema)
-        hook = cls.validate_hook(schema)
+    def validate(cls, options):
+        query = cls.validate_query(options)
+        hook = cls.validate_hook(options)
 
-        model, field = cls.validate_model(schema)
-        through, through_fields = cls.validate_through_model(schema)
+        model, field = cls.validate_model(options)
+        through_result = cls.validate_through_model(options)
 
         return {'query': query,
                 'hook': hook,
                 'model': model,
                 'field': field,
-                'through': through,
-                'through_fields': through_fields}
+                'left_field': through_result['left_field'],
+                'right_field': through_result['right_field'],
+                'through': through_result['model'],
+                'through_fields': through_result['fields']}
 
-    def _get_raw_value(self, raw_data):
+    def _get_raw_value(self, raw_data, query):
         raise NotImplementedError
 
     def parse(self, raw_data):
-        value = self._get_raw_value(raw_data)
+        value = self._get_raw_value(raw_data, query=self.query)
         if self.hook:
             value = self.hook
-        left_value = self._get_foreign_value(self.model, self.name)
-        right_value = self._get_foreign_value(self.ri)
+        value = self._get_foreign_value(value,
+                                        self.right_model,
+                                        self.right_model_field)
         return value
+
+    def get_through_instance(self, raw_data):
+        if self.through_model:
+            fields = ()
+            if self.through_fields:
+                fields = map(partial(self.field_parser_cls,
+                                     self.through_model),
+                             zip(self.through_fields.items()))
+
+            data = {field.name: field.parse(raw_data) for field in fields}
+            return self.through_model(**data)
 
 
 class BaseModelParser(object):
-    DEFAULT_BULK_INSERT = 1000
 
     field_parser_cls = BaseFieldParser
     field_parser_m2m_cls = BaseManyToManyParseField
 
-    def __init__(self, model, schema):
+    def __init__(self, model, name, options):
+        self.name = name
         self.model = self.validate_model(model)
-        self.query, fields_info, fields_info_m2m = self.validate(schema)
 
-        self.fields = self.make_fields(fields_info)
-        self.fields_m2m = self.make_fields_m2m(fields_info_m2m)
+        options = self.validate(options)
+        self.query = options['query']
+        self.fields = self.make_fields(self.model, options['fields'])
+        self.fields_m2m = self.make_fields_m2m(self.model,
+                                               options['fields_m2m'])
 
     @classmethod
-    def make_fields(cls, model, fields_info):
+    def make_fields(cls, model, fields):
         return map(partial(cls.field_parser_cls, model),
-                   zip(fields_info.items()))
+                   zip(fields.items()))
 
     @classmethod
-    def make_fields_m2m(cls, model, fields_info):
+    def make_fields_m2m(cls, model, fields):
         return map(partial(cls.field_parser_m2m_cls, model),
-                   zip(fields_info.items()))
+                   zip(fields.items()))
 
     @staticmethod
     def validate_model(model_name):
@@ -191,36 +231,43 @@ class BaseModelParser(object):
         return model
 
     @staticmethod
-    def validate(schema):
-        query = schema.get('query')
+    def validate(options):
+        query = options.get('query')
         if query is None:
-            raise ValueError('schema must contain "query" key')
+            raise ValueError('options must contain "query" key')
 
-        fields = schema.get('fields')
+        fields = options.get('fields')
         if fields is None:
-            raise ValueError('schema must contain "fields" key')
+            raise ValueError('options must contain "fields" key')
         else:
             if not isinstance(fields, dict):
                 raise TypeError('{fields} must be a dict'.format(fields))
 
-        fields_m2m = schema.get('rels', ())
-        return query, fields, fields_m2m
+        fields_m2m = options.get('rels', ())
+        return {'query': query,
+                'fields': fields,
+                'fields_m2m': fields_m2m}
 
     def parse(self, source):
-        instances = []
-        for i, raw_data in enumerate(self.get_item_source(source)):
-            instance = self.model(**self.get_item_source(raw_data))
-            instances.append(instance)
-
-            if not i % self.DEFAULT_BULK_INSERT:
-                self.model.objects.bulk_insert(instances)
-                instances = []
+        for raw_data in self.get_item_source(source):
+            self.model.objects.get_or_create(**self.get_item_data(raw_data))
 
     def parse_m2m(self, source):
-        instances = []
-        for i, raw_data in enumerate(self.get_item_source(source)):
-            for field in self.fields_m2m:
-                left_instance =
+        for raw_data in self.get_item_source(source):
+            left_instances = self.model.objects.filter(
+                **self.get_item_source(source)
+            )
+            for left_instance in left_instances:
+                for field in self.fields_m2m:
+                    right_instance = field.parse(raw_data)
+                    if field.through_model:
+                        through = field.get_through_instance(raw_data)
+                        setattr(through, field.left_field, left_instance)
+                        setattr(through, field.right_field, right_instance)
+                        through.save()
+                    else:
+                        right_manager = getattr(left_instance, field.field)
+                        right_manager.add(right_instance)
 
     def get_item_source(self, source):
         raise NotImplementedError
@@ -239,11 +286,11 @@ class BaseMapperBackend(object):
         self.readed = 0
         self.loaded = 0
 
-    def load(self, file_name, schemes):
+    def load(self, file_name, options):
         """
         :param file_name: full name of source file
         :type file_name: basestring
-        :param schemes: parsing info grouped by model, for example
+        :param options: parsing info grouped by model, for example
             {'app_label.model_name':
                 {'query': 'node.path',
                  'fields': {'plain_field': 'node.path',
@@ -253,11 +300,17 @@ class BaseMapperBackend(object):
                     'm2m_field': {'query': 'node.path',
                                   'through': 'app_label.model_name'}}}
 
-        :type schemes: dict
+        :type options: dict
         :return:
         """
         self.source = self.load_source(file_name)
-        self.parsers = self.load_parsers(schemes)
+        self.parsers = self.load_parsers(options)
+
+        for parser in self.parsers:
+            parser.parse()
+
+        for parser in self.parsers:
+            parser.parser_m2m()
 
     def load_source(self, file_name):
         """
@@ -266,14 +319,14 @@ class BaseMapperBackend(object):
         """
         raise NotImplementedError
 
-    def load_parsers(self, schemes):
+    def load_parsers(self, options):
         """
-        :param schemes: schemes of mapping
-        :type schemes: dict
-        :return: schema
+        :param options: options of mapping
+        :type options: dict
+        :return: options
         """
         parsers = []
-        for model, parsing_info in schemes.iteritems():
+        for model, parsing_info in options.iteritems():
             parser = self.parser_cls(model, parsing_info)
             parsers.append(parser)
         return parsers
