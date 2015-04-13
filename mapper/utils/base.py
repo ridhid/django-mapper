@@ -1,79 +1,197 @@
+import warnings
 from functools import partial
 from django.db.models.loading import get_model
 
 
-class BaseFieldParser(object):
-
-    def __init__(self, model, name, options):
-        self.model = model
-        self.name = name
-
-        options = self.validate(options)
-        self.query = options['query']
-        self.hook = options['hook']
-        self.rel_to = options['model']
-        self.rel_to_field = options['field']
+class HookRegistry(object):
+    instance = None
+    hooks = {}
 
     @classmethod
-    def validate_query(cls, query):
-        if isinstance(query, dict):
-            query = query.get('query')
+    def registry(cls, name, hook):
+        cls.hooks[name] = hook
 
-        if query is None:
-            raise ValueError('field must contain a "query" in description')
-        return query
+
+def simple_hook(value):
+    return value
+
+HookRegistry.registry('simple_hook', simple_hook)
+
+
+class BaseValidator(object):
+    """
+    Base Node Validator.
+    Contain basic exception and entry point for validation.
+    Include total field tuple, required field tuple and field dependencies
+
+    .. note: for validate options call `validate`
+    """
+    node_type = 'Node'
+    fields = ()
+    required = ()
+    dependencies = ()
+
+    @classmethod
+    def field_broken_error(cls, field, reason=None, format=None):
+        msg = '{node_type}: broken "{field}"'.format(
+            node_type=cls.node_type,
+            field=field
+        )
+        if reason:
+            msg = ', because: '.join((msg, reason))
+        if format:
+            msg = ', needed: '.join((msg, format))
+        raise ValueError(msg)
+
+    @classmethod
+    def field_required_error(cls, field, format=None):
+        msg = '{node_type}: required "{field}"'.format(
+            node_type=cls.node_type,
+            field=field
+        )
+        if format:
+            msg = ', for example: '.join((msg, format))
+        raise ValueError(msg)
+
+    @classmethod
+    def field_dependencies_error(cls, field, dependence):
+        msg = '{node_type}: field {field} require {dependence}'.format(
+            node_type=cls.node_type, field=field, dependence=dependence
+        )
+        raise ValueError(msg)
+
+    @classmethod
+    def field_unknow_warn(cls, field):
+        msg = '{field} not include in Validator.fields attribute'.format(
+            field=field
+        )
+        warnings.warn(msg)
+
+    @classmethod
+    def validate(cls, options):
+        for key, value in options.items()[:]:
+            if key not in cls.fields:
+                cls.field_unknow_warn(key)
+
+            validator = getattr(cls, 'validate_{}'.format(key), None)
+            if validator:
+                options[key] = validator(value)
+
+        # find broken dependency
+        for field, deps in [x for x in cls.dependencies if options.get(x[0])]:
+            for dependence in filter(lambda d: not options.get(d), deps):
+                cls.field_dependencies_error(field, dependence)
+
+        # raise exception for missing required fields for node
+        for key in filter(lambda x: x not in options, cls.required):
+            cls.field_required_error(key)
+
+        # fill empty other non-required fields
+        for key in filter(lambda x: x not in options, cls.fields):
+            options[key] = None
+
+        return options
+
+
+class BaseFieldValidator(BaseValidator):
+
+    node_type = 'Model field'
+    fields = ('query', 'model', 'field', 'hook')
+    required = ('query', )
+    dependencies = (
+        ('model', ('field', )),
+        ('field', ('model', ))
+    )
+
+    @classmethod
+    def validate(cls, options):
+        if isinstance(options, basestring):
+            options = {'query': options}
+        return super(BaseFieldValidator, cls).validate(options)
 
     @classmethod
     def validate_model(cls, options):
         model = options.get('model')
-        field = options.get('field')
-
-        if model and field is None:
-            raise ValueError('field must contain a "field" attr '
-                             'if "model" has been specified')
-
-        if field and model is None:
-            raise ValueError('field must contain a "model" attr if '
-                             '"field" has been specified')
 
         if model and isinstance(model, basestring):
             rel = get_model(model.split('.'))
             if rel is None:
-                raise ValueError('model {model} not found'
-                                 .format(model=model))
-        else:
-            raise ValueError('field "model" must contain information '
-                             'about model as "app_label.model_name"')
+                cls.field_broken_error('model {model}'.format(model=model),
+                                       '{} not found Model'.format(model),
+                                       'app_label.model_name')
+        return model
 
-        if field:
-            if field not in model._meta.get_all_field_names():
-                raise ValueError('model {model} not contain field {field}'
-                                 .format(model=model, field=field))
-        else:
-            raise ValueError('field must contain a "field" field')
+    @classmethod
+    def validate_field(cls, options):
+        field = options.get('field')
+        model = cls.validate_model(options)
 
-        return model, field
+        if field not in model._meta.get_all_field_names():
+            cls.field_broken_error('field')
 
     @classmethod
     def validate_hook(cls, options):
         hook = options.get('hook')
         if hook in HookRegistry.hooks:
             return HookRegistry.hooks[hook]
-        raise ValueError('hook {hook} not found'.format(hook=hook))
+        cls.field_broken_error(
+            'hook {hook}'.format(hook=hook),
+            '{hook} not found in HookRegistry'.format(hook=hook),
+            'call HookRegistry.registry({hook}, function)'.format(hook=hook))
+
+
+class BaseManyToManyValidator(BaseValidator):
+
+    node_type = 'Many to Many field parser'
+    fields = ('query', 'model', 'field', 'through', 'left_field',
+              'right_field', 'hook', 'fields')
+    required = ('query', 'model', 'field')
+    dependencies = (
+        ('model', ('field', )),
+        ('field', ('model', )),
+        ('left_field', ('through', )),
+        ('right_field', ('through', )),
+        ('through', ('left_field', 'right_field')),
+        ('fields', ('through', ))
+    )
+    plain_validator_cls = BaseValidator
 
     @classmethod
-    def validate(cls, options):
-        query = cls.validate_query(options)
-        if isinstance(options, dict):
-            hook = cls.validate_hook(options)
-            model, field = cls.validate_model(options)
-        else:
-            model = field = hook = None
+    def validate_through_model(cls, options):
+        through = options.get('through')
+        if through is not None:
+            through = get_model(through.split('.'))
+            if not through:
+                cls.field_broken_error(
+                    'through',
+                    '{through} not found'.format(through=through),
+                    'app_label.model_name'
+                )
+        return
 
-        return {'query': query,
-                'hook': hook,
-                'model': model,
-                'field': field}
+    @classmethod
+    def validate_fields(cls, options):
+        through = cls.validate_through_model(options)
+
+        validated = []
+        fields = options.get('fields') or []
+        for field in fields.items():
+            validated.append(cls.plain_validator_cls.validate(field))
+        return fields
+
+
+class BaseFieldParser(object):
+    validator_cls = BaseValidator
+
+    def __init__(self, model, name, options):
+        self.model = model
+        self.name = name
+
+        options = self.validator_cls.validate(options)
+        self.query = options['query']
+        self.hook = options['hook']
+        self.rel_to = options['model']
+        self.rel_to_field = options['field']
 
     def _get_raw_value(self, raw_data, query):
         raise NotImplementedError
@@ -92,6 +210,9 @@ class BaseFieldParser(object):
                                             field=self.rel_to_field)
         return value
 
+    def __unicode__(self):
+        return '{model}->{field}'.format(model=self.model, field=self.field)
+
 
 class BaseManyToManyParseField(BaseFieldParser):
     field_parser_cls = BaseFieldParser
@@ -108,66 +229,6 @@ class BaseManyToManyParseField(BaseFieldParser):
         self.through_fields = options['through_fields']
         self.left_field = options['left_field']
         self.right_field = options['right_field']
-
-    @classmethod
-    def validate_through_model(cls, options):
-        through = options.get('through')
-        through_all_fields = ()
-        if through is not None:
-            through = get_model(through.split('.'))
-            if through is None:
-                raise ValueError('model {model} not found'.
-                                 format(model=through))
-            through_all_fields = through._meta.get_all_field_names()
-
-        left_field = options.get('left_field')
-        right_field = options.get('right_field')
-
-        if through and not left_field:
-            raise ValueError('many to many relations description must contain'
-                             '"left_field" field, if contain "through" field')
-        if through and not right_field:
-            raise ValueError('many to many relations description must contain'
-                             '"right_field" field, if contain "through" field')
-
-        if left_field not in through_all_fields:
-            raise ValueError('model {model} not contain: {field}'
-                             .format(field=left_field))
-
-        if right_field not in through_all_fields:
-            raise ValueError('model {model} not contain: {field}'
-                             .format(field=right_field))
-
-        fields = options.get('fields')
-        if fields and not through:
-            raise ValueError('many to many relation description must contain'
-                             '"through" if "fields" is specified')
-        elif fields:
-            for field in fields:
-                if field not in through_all_fields:
-                    raise ValueError('model {model} not contain: {field}'
-                                     .format(model=through, field=field))
-        return {'model': through,
-                'fields': fields,
-                'left_field': left_field,
-                'right_field': right_field}
-
-    @classmethod
-    def validate(cls, options):
-        query = cls.validate_query(options)
-        hook = cls.validate_hook(options)
-
-        model, field = cls.validate_model(options)
-        through_result = cls.validate_through_model(options)
-
-        return {'query': query,
-                'hook': hook,
-                'model': model,
-                'field': field,
-                'left_field': through_result['left_field'],
-                'right_field': through_result['right_field'],
-                'through': through_result['model'],
-                'through_fields': through_result['fields']}
 
     def _get_raw_value(self, raw_data, query):
         raise NotImplementedError
@@ -192,14 +253,23 @@ class BaseManyToManyParseField(BaseFieldParser):
             data = {field.name: field.parse(raw_data) for field in fields}
             return self.through_model(**data)
 
+    def __unicode__(self):
+        if self.through_model is None:
+            return '{left} <-> {righ}'.format(left=self.left_model,
+                                              right=self.right_model)
+        return '{left} <- {through} -> {right}'.format(
+            left=self.left_model,
+            right=self.right_model,
+            through=self.through_model
+        )
+
 
 class BaseModelParser(object):
 
     field_parser_cls = BaseFieldParser
     field_parser_m2m_cls = BaseManyToManyParseField
 
-    def __init__(self, model, name, options):
-        self.name = name
+    def __init__(self, model, options):
         self.model = self.validate_model(model)
 
         options = self.validate(options)
@@ -211,12 +281,14 @@ class BaseModelParser(object):
     @classmethod
     def make_fields(cls, model, fields):
         return map(partial(cls.field_parser_cls, model),
-                   zip(fields.items()))
+                   fields.keys(),
+                   fields.values())
 
     @classmethod
     def make_fields_m2m(cls, model, fields):
         return map(partial(cls.field_parser_m2m_cls, model),
-                   zip(fields.items()))
+                   fields.keys(),
+                   fields.values())
 
     @staticmethod
     def validate_model(model_name):
@@ -326,24 +398,7 @@ class BaseMapperBackend(object):
         :return: options
         """
         parsers = []
-        for model, parsing_info in options.iteritems():
-            parser = self.parser_cls(model, parsing_info)
+        for model, parser_options in options.iteritems():
+            parser = self.parser_cls(model, parser_options)
             parsers.append(parser)
         return parsers
-
-
-class HookRegistry(object):
-    """
-    .. note: implement Singleton pattern
-    """
-    instance = None
-    hooks = {}
-
-    def __new__(cls, *args, **kwargs):
-        if cls.instance is None:
-            cls.instance = super(HookRegistry, cls).__new__(*args, **kwargs)
-        return cls.instance
-
-    @classmethod
-    def registry(cls, name, hook):
-        cls.hooks[name] = hook
