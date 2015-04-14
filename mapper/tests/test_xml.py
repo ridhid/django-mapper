@@ -1,6 +1,13 @@
+# coding: utf-8
+
+from lxml import etree
+
 from django.test import TestCase
+
 from .utils import load_source_abs_path
+from ..tests.models import News, GUID
 from ..utils import load_backend
+from ..utils.xml import XmlFieldParser
 
 
 class XmlMapperTestSuite(TestCase):
@@ -68,3 +75,48 @@ class XmlMapperTestSuite(TestCase):
         self.assertFalse(self.backend.errors)
         self.assertEquals(self.backend.readed,
                           self.backend.loaded)
+
+
+class XmlFieldParserTest(TestCase):
+    source_file = load_source_abs_path('source/hardware.rss')
+
+    def setUp(self):
+        self.created = []
+
+    def tearDown(self):
+        for item in self.created:
+            item.delete()
+
+    def test_atomic_parse(self):
+        source = etree.fromstring("""
+        <item>
+            <title>Технология Toshiba</title>
+            <link>https://news.yandex.ru/yandsearch?</link>
+            <guid>cl4url=www.3dnews.ru%2F912388</guid>
+        </item>""")
+
+        parser = XmlFieldParser(News, 'title', 'title')
+        value = parser.parse(source)
+
+        self.assertEqual(value,
+                         'Технология Toshiba',
+                         'error when get atomic value')
+
+    def test_atomic_model_instance(self):
+        guid = GUID.objects.create(link='https://news.yandex.ru/yandsearch?')
+        self.created.append(guid)
+
+        source = etree.fromstring("""
+        <item>
+            <title>Технология Toshiba</title>
+            <link>https://news.yandex.ru/yandsearch?</link>
+            <guid>cl4url=www.3dnews.ru%2F912388</guid>
+        </item>""")
+
+        parser = XmlFieldParser(News, 'title', {'model': 'mapper.GUID',
+                                                'field': 'link'})
+        value = parser.parse(source)
+        self.assertTrue(value, 'model instance not found')
+        self.assertIsInstance(value, GUID, 'founded is not model instance')
+        self.assertTrue(value.pk, "founded has'not pk attribute")
+        self.assertEqual(value.pk, guid.pk, "founded not needed element")
