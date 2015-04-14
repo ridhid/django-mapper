@@ -23,3 +23,14 @@ class GUID(models.Model):
 
 class Place(models.Model):
     news = models.ManyToManyField(to='mapper.News', related_name='places')
+
+    class Meta:
+        app_label = 'mapper'
+
+
+class NewsThroughPlace(models.Model):
+    events = models.ForeignKey('mapper.News', related_name='through')
+    places = models.ForeignKey('mapper.Place', related_name='through')
+
+    class Meta:
+        app_label = 'mapper'

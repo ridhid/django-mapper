@@ -1,3 +1,4 @@
+from django.db.models.base import Model
 import warnings
 from functools import partial
 from django.db.models.loading import get_model
@@ -32,25 +33,25 @@ class BaseValidator(object):
     dependencies = ()
 
     @classmethod
-    def field_broken_error(cls, field, reason=None, format=None):
+    def field_broken_error(cls, field, reason=None, state_format=None):
         msg = '{node_type}: broken "{field}"'.format(
             node_type=cls.node_type,
             field=field
         )
         if reason:
             msg = ', because: '.join((msg, reason))
-        if format:
-            msg = ', needed: '.join((msg, format))
+        if state_format:
+            msg = ', needed: '.join((msg, state_format))
         raise ValueError(msg)
 
     @classmethod
-    def field_required_error(cls, field, format=None):
+    def field_required_error(cls, field, state_format=None):
         msg = '{node_type}: required "{field}"'.format(
             node_type=cls.node_type,
             field=field
         )
-        if format:
-            msg = ', for example: '.join((msg, format))
+        if state_format:
+            msg = ', for example: '.join((msg, state_format))
         raise ValueError(msg)
 
     @classmethod
@@ -68,27 +69,42 @@ class BaseValidator(object):
         warnings.warn(msg)
 
     @classmethod
-    def validate(cls, options):
+    def find_broken_dependency(cls, options):
+        fields = filter(lambda x: options.get(x[0]), cls.dependencies)
+        for field, deps in fields:
+            for dependence in filter(lambda x: not options.get(x), deps):
+                cls.field_dependencies_error(field, dependence)
+
+    @classmethod
+    def run_validators(cls, options):
         for key, value in options.items()[:]:
             if key not in cls.fields:
                 cls.field_unknow_warn(key)
 
             validator = getattr(cls, 'validate_{}'.format(key), None)
-            if validator:
-                options[key] = validator(value)
+            if validator and value is not None:
+                options[key] = validator(options)
+        return options
 
-        # find broken dependency
-        for field, deps in [x for x in cls.dependencies if options.get(x[0])]:
-            for dependence in filter(lambda d: not options.get(d), deps):
-                cls.field_dependencies_error(field, dependence)
-
-        # raise exception for missing required fields for node
+    @classmethod
+    def find_missing_required(cls, options):
         for key in filter(lambda x: x not in options, cls.required):
             cls.field_required_error(key)
 
-        # fill empty other non-required fields
+    @classmethod
+    def fill_empty_fields(cls, options):
         for key in filter(lambda x: x not in options, cls.fields):
             options[key] = None
+        return options
+
+    @classmethod
+    def validate(cls, options):
+        # find broken dependency
+        cls.find_broken_dependency(options)
+        cls.find_missing_required(options)
+
+        options = cls.run_validators(options)
+        options = cls.fill_empty_fields(options)
 
         return options
 
@@ -114,11 +130,20 @@ class BaseFieldValidator(BaseValidator):
         model = options.get('model')
 
         if model and isinstance(model, basestring):
-            rel = get_model(model.split('.'))
-            if rel is None:
+            model = get_model(*model.split('.'))
+            if model is None:
                 cls.field_broken_error('model {model}'.format(model=model),
                                        '{} not found Model'.format(model),
                                        'app_label.model_name')
+
+        elif not issubclass(model, Model):
+            cls.field_broken_error(
+                'model',
+                '{model} is not model description '
+                'or inherited from django.db.models.Model'.format(model=model),
+                'app_label.model_name or '
+                'class inherited from django.db.models.Model'
+            )
         return model
 
     @classmethod
@@ -127,17 +152,32 @@ class BaseFieldValidator(BaseValidator):
         model = cls.validate_model(options)
 
         if field not in model._meta.get_all_field_names():
-            cls.field_broken_error('field')
+            cls.field_broken_error(
+                'field',
+                '{model} not contain field {field}'.format(
+                    model=model,
+                    field=field
+                ),
+                'field name, included in model'
+            )
+
+        return field
 
     @classmethod
     def validate_hook(cls, options):
         hook = options.get('hook')
-        if hook in HookRegistry.hooks:
-            return HookRegistry.hooks[hook]
-        cls.field_broken_error(
-            'hook {hook}'.format(hook=hook),
-            '{hook} not found in HookRegistry'.format(hook=hook),
-            'call HookRegistry.registry({hook}, function)'.format(hook=hook))
+        if callable(hook):
+            hook = hook
+        elif hook in HookRegistry.hooks:
+            hook = HookRegistry.hooks[hook]
+        else:
+            cls.field_broken_error(
+                'hook {hook}'.format(hook=hook),
+                '{hook} not found in HookRegistry'.format(hook=hook),
+                'call HookRegistry.registry({hook}, function)'
+                .format(hook=hook)
+            )
+        return hook
 
 
 class BaseManyToManyValidator(BaseValidator):
@@ -160,7 +200,7 @@ class BaseManyToManyValidator(BaseValidator):
     def validate_through_model(cls, options):
         through = options.get('through')
         if through is not None:
-            through = get_model(through.split('.'))
+            through = get_model(*through.split('.'))
             if not through:
                 cls.field_broken_error(
                     'through',
@@ -171,23 +211,21 @@ class BaseManyToManyValidator(BaseValidator):
 
     @classmethod
     def validate_fields(cls, options):
-        through = cls.validate_through_model(options)
-
         validated = []
         fields = options.get('fields') or []
-        for field in fields.items():
-            validated.append(cls.plain_validator_cls.validate(field))
+        for field, options in fields.items():
+            validated.append(cls.plain_validator_cls.validate(options))
         return fields
 
 
 class BaseFieldParser(object):
-    validator_cls = BaseValidator
+    validator = BaseFieldValidator
 
     def __init__(self, model, name, options):
         self.model = model
         self.name = name
 
-        options = self.validator_cls.validate(options)
+        options = self.validator.validate(options)
         self.query = options['query']
         self.hook = options['hook']
         self.rel_to = options['model']
@@ -215,18 +253,19 @@ class BaseFieldParser(object):
 
 
 class BaseManyToManyParseField(BaseFieldParser):
+    validator = BaseManyToManyValidator
     field_parser_cls = BaseFieldParser
 
     def __init__(self, model, name, options):
         self.name = name
         self.left_model = model
 
-        options = self.validate(options)
+        options = self.validator.validate(options)
         self.query = options['query']
         self.right_model = options['model']
         self.right_model_field = options['field']
         self.through_model = options['through']
-        self.through_fields = options['through_fields']
+        self.through_fields = options['fields']
         self.left_field = options['left_field']
         self.right_field = options['right_field']
 
@@ -379,10 +418,10 @@ class BaseMapperBackend(object):
         self.parsers = self.load_parsers(options)
 
         for parser in self.parsers:
-            parser.parse()
+            parser.parse(self.source)
 
         for parser in self.parsers:
-            parser.parser_m2m()
+            parser.parser_m2m(self.source)
 
     def load_source(self, file_name):
         """
