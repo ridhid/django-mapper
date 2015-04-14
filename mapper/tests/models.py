@@ -1,4 +1,7 @@
+from django.core.management import call_command
 from django.db import models
+
+from ..utils import is_test_environment
 
 
 class News(models.Model):
@@ -34,3 +37,10 @@ class NewsThroughPlace(models.Model):
 
     class Meta:
         app_label = 'mapper'
+
+
+def sync_test_models():
+    if is_test_environment():
+        call_command('syncdb', '--noinput')
+
+sync_test_models()
