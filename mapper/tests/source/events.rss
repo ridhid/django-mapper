@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<rss version="2.0">
+  <channel>
+    <events>
+      <event>
+        <title> some title</title>
+        <date>15.03.2014</date>
+        <place> some place 1</place>
+        <organizer> organizer 1 </organizer>
+      </event>
+      <event>
+        <title> some title 1</title>
+        <date>20.03.2014</date>
+        <place> some place 2</place>
+        <organizer> organizer 1 </organizer>
+      </event>
+    </events>
+    <places>
+      <place>
+        <title> some place 1</title>
+        <owner> owner 1 </owner>
+      </place>
+      <place>
+        <title> some place 2</title>
+        <owner> owner 1 </owner>
+      </place>
+    </places>
+  </channel>
+</rss>

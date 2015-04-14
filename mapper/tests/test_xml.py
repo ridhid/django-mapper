@@ -5,43 +5,37 @@ from lxml import etree
 from django.test import TestCase
 
 from .utils import load_source_abs_path
-from ..tests.models import News, GUID
 from ..utils import load_backend
 from ..utils.xml import XmlFieldParser
+from ..tests.models import Event, Organizer, Place, Owner, EventDate
 
 
 class XmlMapperTestSuite(TestCase):
     source_file = 'source/hardware.rss'
     schema = {
-        'mapper.News': {
-            'query': 'channel.item',
+        'mapper.Event': {
+            'query': 'channel.events',
             'fields': {
                 'title': 'title',
-                'link': 'link',
-                'description': 'description',
-                'publication_date': {
-                    'query': 'pubDate',
-                    'hook': 'simple_hook'
+                'organizer': {
+                    'query': 'organizer',
+                    'model': 'mapper.Organizer',
+                    'field': 'title',
                 },
-                'guid': {
-                    'query': 'guid',
-                    'model': 'mapper.GUID',
-                    'field': 'link',
-                }
             },
             'rels': {
                 'places': {
                     'query': 'place',
                     'model': 'mapper.Place',
-                    'field': 'events',
-                    'through': 'mapper.NewsThroughPlace',
-                    'left_field': 'events',
-                    'right_field': 'places',
-                    'hook': 'simple_hook',
+                    'field': 'event_set',
+                    'through': 'mapper.EventDate',
+                    'left_field': 'event',
+                    'right_field': 'place',
+                    'hook': 'capfirst',
                     'fields': {
                         'date': {
-                            'query': 'pubDate',
-                            'hook': 'simple_hook'
+                            'query': 'date',
+                            'hook': 'date'
                         }
                     }
                 }
@@ -89,34 +83,32 @@ class XmlFieldParserTest(TestCase):
 
     def test_atomic_parse(self):
         source = etree.fromstring("""
-        <item>
-            <title>Технология Toshiba</title>
-            <link>https://news.yandex.ru/yandsearch?</link>
-            <guid>cl4url=www.3dnews.ru%2F912388</guid>
+        <event>
+            <title>some event</title>
+            <place>some place<place>
         </item>""")
 
-        parser = XmlFieldParser(News, 'title', 'title')
+        parser = XmlFieldParser(Event, 'title', 'title')
         value = parser.parse(source)
 
         self.assertEqual(value,
-                         'Технология Toshiba',
+                         'some event',
                          'error when get atomic value')
 
     def test_atomic_model_instance(self):
-        guid = GUID.objects.create(link='https://news.yandex.ru/yandsearch?')
+        guid = Place.objects.create(title='some place')
         self.created.append(guid)
 
         source = etree.fromstring("""
-        <item>
-            <title>Технология Toshiba</title>
-            <link>https://news.yandex.ru/yandsearch?</link>
-            <guid>cl4url=www.3dnews.ru%2F912388</guid>
+        <event>
+            <title>some event</title>
+            <place>some place<place>
         </item>""")
 
-        parser = XmlFieldParser(News, 'title', {'model': 'mapper.GUID',
-                                                'field': 'link'})
+        parser = XmlFieldParser(Event, 'title', {'model': 'mapper.Place',
+                                                 'field': 'title'})
         value = parser.parse(source)
         self.assertTrue(value, 'model instance not found')
-        self.assertIsInstance(value, GUID, 'founded is not model instance')
+        self.assertIsInstance(value, Event, 'founded is not model instance')
         self.assertTrue(value.pk, "founded has'not pk attribute")
         self.assertEqual(value.pk, guid.pk, "founded not needed element")
