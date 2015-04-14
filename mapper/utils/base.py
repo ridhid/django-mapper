@@ -32,6 +32,8 @@ class BaseValidator(object):
     required = ()
     dependencies = ()
 
+    query_divider = '.'
+
     @classmethod
     def field_broken_error(cls, field, reason=None, state_format=None):
         msg = '{node_type}: broken "{field}"'.format(
@@ -124,6 +126,20 @@ class BaseFieldValidator(BaseValidator):
         if isinstance(options, basestring):
             options = {'query': options}
         return super(BaseFieldValidator, cls).validate(options)
+
+    @classmethod
+    def validate_query(cls, options):
+        query = None
+        if isinstance(options, dict):
+            query = options.get('query')
+        elif isinstance(options, basestring):
+            query = options
+
+        if query is None:
+            cls.field_broken_error('query',
+                                   '{query} wrong'.format(query=options),
+                                   'must be a string or dict with options')
+        return query
 
     @classmethod
     def validate_model(cls, options):
@@ -231,7 +247,7 @@ class BaseFieldParser(object):
         self.rel_to = options['model']
         self.rel_to_field = options['field']
 
-    def _get_raw_value(self, raw_data, query):
+    def get_raw_value(self, raw_data, query):
         raise NotImplementedError
 
     @staticmethod
@@ -239,7 +255,7 @@ class BaseFieldParser(object):
         return model.get(**{field: value})
 
     def parse(self, raw_data):
-        value = self._get_raw_value(raw_data, query=self.query)
+        value = self.get_raw_value(raw_data, query=self.query)
         if self.hook:
             value = self.hook
         if self.rel_to and self.rel_to_field:
@@ -269,11 +285,11 @@ class BaseManyToManyParseField(BaseFieldParser):
         self.left_field = options['left_field']
         self.right_field = options['right_field']
 
-    def _get_raw_value(self, raw_data, query):
+    def get_raw_value(self, raw_data, query):
         raise NotImplementedError
 
     def parse(self, raw_data):
-        value = self._get_raw_value(raw_data, query=self.query)
+        value = self.get_raw_value(raw_data, query=self.query)
         if self.hook:
             value = self.hook
         value = self._get_foreign_value(value,
@@ -360,13 +376,13 @@ class BaseModelParser(object):
                 'fields_m2m': fields_m2m}
 
     def parse(self, source):
-        for raw_data in self.get_item_source(source):
+        for raw_data in self.get_source_iterator(source, self.query):
             self.model.objects.get_or_create(**self.get_item_data(raw_data))
 
     def parse_m2m(self, source):
-        for raw_data in self.get_item_source(source):
+        for raw_data in self.get_source_iterator(source):
             left_instances = self.model.objects.filter(
-                **self.get_item_source(source)
+                **self.get_item_data(raw_data=source)
             )
             for left_instance in left_instances:
                 for field in self.fields_m2m:
@@ -380,7 +396,7 @@ class BaseModelParser(object):
                         right_manager = getattr(left_instance, field.field)
                         right_manager.add(right_instance)
 
-    def get_item_source(self, source):
+    def get_source_iterator(self, source, query):
         raise NotImplementedError
 
     def get_item_data(self, raw_data):
@@ -388,11 +404,12 @@ class BaseModelParser(object):
 
 
 class BaseMapperBackend(object):
-    source = None
-    parsers = None
     parser_cls = BaseModelParser
 
     def __init__(self):
+        self.source = None
+        self.parsers = None
+
         self.errors = 0
         self.readed = 0
         self.loaded = 0

@@ -1,6 +1,7 @@
+import sys
 from django.conf import settings
 from json import JsonMapperBackend
-from xml import  XmlMapperBackend
+from xml import XmlMapperBackend
 
 
 BACKENDS = {
@@ -18,3 +19,7 @@ def load_backend(backend=None):
         return backend_cls()
 
     raise ValueError('backend not found')
+
+
+def is_test_environment():
+    return 'test' in sys.argv
