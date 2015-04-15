@@ -1,4 +1,5 @@
 from django.db.models.base import Model
+from django.utils.datetime_safe import datetime
 from django.utils.text import capfirst
 import warnings
 from functools import partial
@@ -14,11 +15,8 @@ class HookRegistry(object):
         cls.hooks[name] = hook
 
 
-def date_hook(value):
-    return value
-
-HookRegistry.registry('date', date_hook)
 HookRegistry.registry('capfirst', capfirst)
+HookRegistry.registry('date', lambda x: datetime.strptime(x, '%d.%m.%Y'))
 
 
 class BaseValidator(object):
@@ -342,7 +340,7 @@ class BaseManyToManyParseField(BaseFieldParser):
     def parse(self, raw_data):
         value = self.process_raw_data(raw_data, query=self.query)
         if self.hook:
-            value = self.hook
+            value = self.hook(value)
         value = self._get_foreign_value(value,
                                         self.right_model,
                                         self.right_model_field)
@@ -382,8 +380,9 @@ class BaseModelParser(object):
         options = self.validate(options)
         self.query = options['query']
         self.fields = self.make_fields(self.model, options['fields'])
-        self.fields_m2m = self.make_fields_m2m(self.model,
-                                               options['fields_m2m'])
+        if options['fields_m2m']:
+            self.fields_m2m = self.make_fields_m2m(self.model,
+                                                   options['fields_m2m'])
 
     @classmethod
     def make_fields(cls, model, fields):
@@ -409,9 +408,13 @@ class BaseModelParser(object):
 
         return model
 
-    @staticmethod
-    def validate(options):
-        query = options.get('query')
+    @classmethod
+    def validate_query(cls, options):
+        return options.get('query')
+
+    @classmethod
+    def validate(cls, options):
+        query = cls.validate_query(options)
         if query is None:
             raise ValueError('options must contain "query" key')
 
@@ -434,7 +437,7 @@ class BaseModelParser(object):
     def parse_m2m(self, source):
         for raw_data in self.get_source_iterator(source, query=self.query):
             left_instances = self.model.objects.filter(
-                **self.get_item_data(raw_data=source)
+                **self.get_item_data(raw_data=raw_data)
             )
             for left_instance in left_instances:
                 for field in self.fields_m2m:
@@ -461,10 +464,6 @@ class BaseMapperBackend(object):
     def __init__(self):
         self.source = None
         self.parsers = None
-
-        self.errors = 0
-        self.readed = 0
-        self.loaded = 0
 
     def load(self, file_name, options):
         """

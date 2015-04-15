@@ -8,15 +8,15 @@ from mapper.utils.base import HookRegistry
 
 from .utils import load_source_abs_path
 from ..utils import load_backend
-from ..utils.xml import XmlFieldParser, XmlManyToManyFieldParser
-from ..tests.models import Event, Place, EventDate, Owner
+from ..utils.xml import XmlFieldParser, XmlManyToManyFieldParser, XmlModelParser
+from ..tests.models import Event, Place, EventDate, Owner, Organizer
 
 
 class XmlMapperTestSuite(TestCase):
     source_file = 'source/events.rss'
     schema = {
         'mapper.Event': {
-            'query': 'channel.events',
+            'query': 'channel.events.event',
             'fields': {
                 'title': 'title',
                 'organizer': {
@@ -29,11 +29,10 @@ class XmlMapperTestSuite(TestCase):
                 'places': {
                     'query': 'place',
                     'model': 'mapper.Place',
-                    'field': 'events',
+                    'field': 'title',
                     'through': 'mapper.EventDate',
                     'left_field': 'event',
                     'right_field': 'place',
-                    'hook': 'capfirst',
                     'fields': {
                         'date': {
                             'query': 'date',
@@ -67,10 +66,10 @@ class XmlMapperTestSuite(TestCase):
     def test_load(self):
         self.backend.load(load_source_abs_path(self.source_file), self.schema)
 
-        self.assertTrue(self.backend.loaded)
-        self.assertFalse(self.backend.errors)
-        self.assertEquals(self.backend.readed,
-                          self.backend.loaded)
+        self.assertEqual(Event.objects.count(), 2)
+        self.assertEqual(Place.objects.count(), 2)
+        self.assertEqual(Organizer.objects.count(), 1)
+        self.assertEqual(EventDate.objects.count(), 2)
 
 
 class XmlFieldParserTest(TestCase):
@@ -260,3 +259,30 @@ class XmlFieldParserTest(TestCase):
         self.assertTrue(value, 'parser return None')
         self.assertIsInstance(value, date, 'value is not instance of date')
         self.assertEqual(value.strftime(date_format), '15-01-2014')
+
+
+class XmlModelParserTest(TestCase):
+    source_file = load_source_abs_path('source/events.rss')
+
+    options = {
+        'query': 'channel.events.event',
+        'fields': {
+            'title': 'title',
+            'organizer': {
+                'query': 'organizer',
+                'model': 'mapper.Organizer',
+                'field': 'title',
+            },
+        },
+    }
+
+    def setUp(self):
+        self.source = etree.parse(self.source_file)
+
+    def test_get_source_iterator(self):
+        parser = XmlModelParser('mapper.Event', self.options)
+        sources = list(parser.get_source_iterator(self.source, parser.query))
+
+        self.assertTrue(sources)
+        self.assertIsInstance(sources, list)
+        self.assertEqual(len(sources), 2)

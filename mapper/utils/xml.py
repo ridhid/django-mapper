@@ -8,20 +8,32 @@ from ..utils.base import BaseManyToManyValidator
 from ..utils.base import BaseManyToManyParseField
 
 
-class XmlFieldValidator(BaseFieldValidator):
+class XmlHelper(object):
+    query_divider = '.'
 
     @classmethod
     def get_relative_xpath(cls, query):
-        return ".//{path}".format(path="/".join(query.split(cls.query_divider)))
+        if not query.startswith('.//'):
+            return ".//{path}".format(path="/".join(
+                query.split(cls.query_divider))
+            )
+        return query
 
     @classmethod
     def get_abs_xpath(cls, query):
-        return '/{path}'.format(path='/'.join(query.split(cls.query_divider)))
+        if not query.startswith('./'):
+            return '/{path}'.format(path='/'.join(
+                query.split(cls.query_divider))
+            )
+        return query
+
+
+class XmlFieldValidator(BaseFieldValidator):
 
     @classmethod
     def validate_query(cls, options):
         query = super(XmlFieldValidator, cls).validate_query(options)
-        query = cls.get_relative_xpath(query)
+        query = XmlHelper.get_relative_xpath(query)
         return query
 
 
@@ -50,6 +62,12 @@ class XmlManyToManyFieldParser(BaseManyToManyParseField):
 class XmlModelParser(BaseModelParser):
     field_parser_cls = XmlFieldParser
     field_parser_m2m_cls = XmlManyToManyFieldParser
+
+    @classmethod
+    def validate_query(cls, options):
+        query = super(XmlModelParser, cls).validate_query(options)
+        query = XmlHelper.get_relative_xpath(query)
+        return query
 
     def get_source_iterator(self, source, query):
         for raw_item in source.findall(query):
