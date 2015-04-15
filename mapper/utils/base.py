@@ -457,15 +457,54 @@ class BaseMapperBackend(object):
         :param file_name: full name of source file
         :type file_name: basestring
         :param options: parsing info grouped by model, for example
-            {'app_label.model_name':
-                {'query': 'node.path',
-                 'fields': {'plain_field': 'node.path',
-                            'plain_field': {'query': 'path',
-                                            'hook': callable},
-                 'rels': {
-                    'm2m_field': {'query': 'node.path',
-                                  'through': 'app_label.model_name'}}}
-
+        ['mapper.Event': {  # app_label.model_name
+                            # for model description
+            'query': 'channel.events',  # query to instance data
+                                        # build through divider '.'
+            'fields': {    # plain fields description
+                           # contain model_field: query in simple case
+                           # contain model_field: dict in other case
+                'title': 'title',   # simple case
+                'organizer': {  # more complex case
+                                # must contain query key
+                    'query': 'organizer',
+                    'model': 'mapper.Organizer',  # if specify model
+                                                  # field parser be
+                                                  # found instance
+                                                  # of this model
+                    'field': 'title',   # required if models specify
+                                        # set field for
+                                        # search in model
+                    'hook': 'hook'  # set hook name apply for value
+                                    # hook must be registry in
+                                    # HookRegistry
+                },
+            },
+            'rels': {  # set M2M relations
+                       # model describe as key for options
+                       # set as 'left_field' for model describe
+                       # in 'rels' section
+                       # model describe in this section
+                       # named 'right_field'
+                'places': {
+                    'query': 'place', # query to instance data
+                                      # build through divider '.'
+                    'model': 'mapper.Place', # required
+                    'field': 'event_set',    # required
+                    'through': 'mapper.EventDate',
+                    'left_field': 'event',
+                    'right_field': 'place',
+                    'hook': 'capfirst',
+                    'fields': {
+                        'date': {
+                            'query': 'date',
+                            'hook': 'date'
+                        }
+                    }
+                }
+            }
+        },
+        ...]
         :type options: dict
         :return:
         """
