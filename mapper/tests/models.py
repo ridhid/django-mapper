@@ -1,9 +1,12 @@
 from django.db import models
 
 
+__ALL__ = ('Event', 'Organizer', 'EventDate', 'Place', 'Owner')
+
+
 class Event(models.Model):
     title = models.CharField(max_length=128)
-    organizer = models.ForeignKey('mapper.Organizer')
+    organizer = models.ForeignKey('mapper.Organizer', null=True, blank=True)
 
     class Meta:
         app_label = 'mapper'
@@ -17,11 +20,11 @@ class Organizer(models.Model):
 
 
 class EventDate(models.Model):
-    event = models.ForeignKey('mapper.Event')
-    place = models.ForeignKey('mapper.Place')
+    event = models.ForeignKey('mapper.Event', null=True, blank=True)
+    place = models.ForeignKey('mapper.Place', null=True, blank=True)
 
-    date = models.DateField()
-    description = models.CharField()
+    date = models.DateField(null=True, blank=True)
+    description = models.CharField(max_length=256)
 
     class Meta:
         app_label = 'mapper'

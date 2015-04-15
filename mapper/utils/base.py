@@ -1,4 +1,5 @@
 from django.db.models.base import Model
+from django.utils.text import capfirst
 import warnings
 from functools import partial
 from django.db.models.loading import get_model
@@ -17,6 +18,7 @@ def date_hook(value):
     return value
 
 HookRegistry.registry('date', date_hook)
+HookRegistry.registry('capfirst', capfirst)
 
 
 class BaseValidator(object):
@@ -196,7 +198,7 @@ class BaseFieldValidator(BaseValidator):
         return hook
 
 
-class BaseManyToManyValidator(BaseValidator):
+class BaseManyToManyValidator(BaseFieldValidator):
 
     node_type = 'Many to Many field parser'
     fields = ('query', 'model', 'field', 'through', 'left_field',
@@ -213,9 +215,9 @@ class BaseManyToManyValidator(BaseValidator):
     plain_validator_cls = BaseValidator
 
     @classmethod
-    def validate_through_model(cls, options):
+    def validate_through(cls, options):
         through = options.get('through')
-        if through is not None:
+        if isinstance(through, basestring):
             through = get_model(*through.split('.'))
             if not through:
                 cls.field_broken_error(
@@ -223,7 +225,16 @@ class BaseManyToManyValidator(BaseValidator):
                     '{through} not found'.format(through=through),
                     'app_label.model_name'
                 )
-        return
+        elif not issubclass(through, Model):
+            cls.field_broken_error(
+                'through',
+                '{through} is not isntance of django.db.models.Model'.format(
+                    through=through,
+                    type=type(through)
+                ),
+                'app_label.model_name'
+            )
+        return through
 
     @classmethod
     def validate_fields(cls, options):
@@ -276,14 +287,27 @@ class BaseFieldParser(object):
     def get_raw_value(self, raw_data, query):
         raise NotImplementedError
 
+    def process_raw_data(self, raw_data, query):
+        value = self.get_raw_value(raw_data, query=query)
+
+        if not value or (hasattr(value, '__iter__') and not len(value)):
+            raise self.ParseNotFound(self.model, self.name, raw_data, query)
+
+        elif hasattr(value, '__iter__') and len(value) > 1:
+            raise self.ParseMultipleData(self.model, self.name,
+                                         raw_data, query)
+
+        return value[0] if hasattr(value, '__iter__') else value
+
     @staticmethod
     def _get_foreign_value(value, model, field):
-        return model.get(**{field: value})
+        inst, created = model.objects.get_or_create(**{field: value})
+        return inst
 
     def parse(self, raw_data):
-        value = self.get_raw_value(raw_data, query=self.query)
+        value = self.process_raw_data(raw_data, query=self.query)
         if self.hook:
-            value = self.hook
+            value = self.hook(value)
         if self.rel_to and self.rel_to_field:
             value = self._get_foreign_value(value,
                                             model=self.rel_to,
@@ -304,6 +328,7 @@ class BaseManyToManyParseField(BaseFieldParser):
 
         options = self.validator.validate(options)
         self.query = options['query']
+        self.hook = options['hook']
         self.right_model = options['model']
         self.right_model_field = options['field']
         self.through_model = options['through']
@@ -313,18 +338,6 @@ class BaseManyToManyParseField(BaseFieldParser):
 
     def get_raw_value(self, raw_data, query):
         raise NotImplementedError
-
-    def process_raw_data(self, raw_data, query):
-        value = self.get_raw_value(raw_data, query=query)
-
-        if not value or (hasattr(value, '__iter__') and not len(value)):
-            raise self.ParseNotFound(self.model, self.name, raw_data, query)
-
-        elif hasattr(value, '__iter__') and len(value) > 1:
-            raise self.ParseMultipleData(self.model, self.name,
-                                         raw_data, query)
-
-        return value if not hasattr(value, '__iter__') else value
 
     def parse(self, raw_data):
         value = self.process_raw_data(raw_data, query=self.query)
@@ -341,7 +354,8 @@ class BaseManyToManyParseField(BaseFieldParser):
             if self.through_fields:
                 fields = map(partial(self.field_parser_cls,
                                      self.through_model),
-                             zip(self.through_fields.items()))
+                             self.through_fields.keys(),
+                             self.through_fields.values())
 
             data = {field.name: field.parse(raw_data) for field in fields}
             return self.through_model(**data)
@@ -418,7 +432,7 @@ class BaseModelParser(object):
             self.model.objects.get_or_create(**self.get_item_data(raw_data))
 
     def parse_m2m(self, source):
-        for raw_data in self.get_source_iterator(source):
+        for raw_data in self.get_source_iterator(source, query=self.query):
             left_instances = self.model.objects.filter(
                 **self.get_item_data(raw_data=source)
             )
@@ -515,7 +529,7 @@ class BaseMapperBackend(object):
             parser.parse(self.source)
 
         for parser in self.parsers:
-            parser.parser_m2m(self.source)
+            parser.parse_m2m(self.source)
 
     def load_source(self, file_name):
         """

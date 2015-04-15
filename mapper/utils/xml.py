@@ -34,7 +34,7 @@ class XmlFieldParser(BaseFieldParser):
 
     @classmethod
     def get_raw_value(cls, raw_data, query):
-        return raw_data.findall(query)
+        return map(lambda x: x.text, raw_data.findall(query))
 
 
 class XmlManyToManyFieldParser(BaseManyToManyParseField):
@@ -44,7 +44,7 @@ class XmlManyToManyFieldParser(BaseManyToManyParseField):
 
     @classmethod
     def get_raw_value(cls, raw_data, query):
-        return raw_data.findall(query)
+        return map(lambda x: x.text, raw_data.findall(query))
 
 
 class XmlModelParser(BaseModelParser):
