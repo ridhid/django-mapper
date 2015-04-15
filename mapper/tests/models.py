@@ -21,6 +21,7 @@ class EventDate(models.Model):
     place = models.ForeignKey('mapper.Place')
 
     date = models.DateField()
+    description = models.CharField()
 
     class Meta:
         app_label = 'mapper'
@@ -28,6 +29,7 @@ class EventDate(models.Model):
 
 class Place(models.Model):
     title = models.CharField(max_length=128)
+    owners = models.ManyToManyField('mapper.Owner')
     events = models.ManyToManyField(
         'mapper.Event',
         through='mapper.EventDate'

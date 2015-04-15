@@ -237,6 +237,32 @@ class BaseManyToManyValidator(BaseValidator):
 class BaseFieldParser(object):
     validator = BaseFieldValidator
 
+    class ParseMultipleData(Exception):
+        def __init__(self, model, name, source, query):
+            self.model = model
+            self.name = name
+            self.source = source
+            self.query = query
+
+        def __unicode__(self):
+            return u'model: {model}\nfield: {field}\n' \
+                   u'{query}: multiple data found \n' \
+                   u'source: {source}'.format(query=self.query,
+                                              source=self.source)
+
+    class ParseNotFound(Exception):
+        def __init__(self, model, name, source, query):
+            self.model = model
+            self.name = name
+            self.source = source
+            self.query = query
+
+        def __unicode__(self):
+            return u'model: {model}\nfield: {field}\n' \
+                   u'{query}: data not found\n' \
+                   u'source: {source}'.format(query=self.query,
+                                              source=self.source)
+
     def __init__(self, model, name, options):
         self.model = model
         self.name = name
@@ -265,7 +291,7 @@ class BaseFieldParser(object):
         return value
 
     def __unicode__(self):
-        return '{model}->{field}'.format(model=self.model, field=self.field)
+        return u'{model}->{field}'.format(model=self.model, field=self.name)
 
 
 class BaseManyToManyParseField(BaseFieldParser):
@@ -288,8 +314,20 @@ class BaseManyToManyParseField(BaseFieldParser):
     def get_raw_value(self, raw_data, query):
         raise NotImplementedError
 
+    def process_raw_data(self, raw_data, query):
+        value = self.get_raw_value(raw_data, query=query)
+
+        if not value or (hasattr(value, '__iter__') and not len(value)):
+            raise self.ParseNotFound(self.model, self.name, raw_data, query)
+
+        elif hasattr(value, '__iter__') and len(value) > 1:
+            raise self.ParseMultipleData(self.model, self.name,
+                                         raw_data, query)
+
+        return value if not hasattr(value, '__iter__') else value
+
     def parse(self, raw_data):
-        value = self.get_raw_value(raw_data, query=self.query)
+        value = self.process_raw_data(raw_data, query=self.query)
         if self.hook:
             value = self.hook
         value = self._get_foreign_value(value,
@@ -310,9 +348,9 @@ class BaseManyToManyParseField(BaseFieldParser):
 
     def __unicode__(self):
         if self.through_model is None:
-            return '{left} <-> {righ}'.format(left=self.left_model,
-                                              right=self.right_model)
-        return '{left} <- {through} -> {right}'.format(
+            return u'{left} <-> {right}'.format(left=self.left_model,
+                                                right=self.right_model)
+        return u'{left} <- {through} -> {right}'.format(
             left=self.left_model,
             right=self.right_model,
             through=self.through_model
