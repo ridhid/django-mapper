@@ -48,7 +48,7 @@ class XmlManyToManyFieldParser(BaseManyToManyParseField):
 
 
 class XmlModelParser(BaseModelParser):
-    field_parser_cls = XmlFieldValidator
+    field_parser_cls = XmlFieldParser
     field_parser_m2m_cls = XmlManyToManyFieldParser
 
     def get_source_iterator(self, source, query):
