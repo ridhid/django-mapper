@@ -13,10 +13,10 @@ class HookRegistry(object):
         cls.hooks[name] = hook
 
 
-def simple_hook(value):
+def date_hook(value):
     return value
 
-HookRegistry.registry('simple_hook', simple_hook)
+HookRegistry.registry('date', date_hook)
 
 
 class BaseValidator(object):
